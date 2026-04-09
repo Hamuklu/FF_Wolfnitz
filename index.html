@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Feuerwehr</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/@supabase/supabase-js"></script>
+
+  <style>
+    #map { height: 100vh; }
+    #login { position:absolute; top:10px; left:10px; background:white; padding:10px; z-index:1000; }
+  </style>
+</head>
+
+<body>
+
+<div id="login">
+  <input id="email" placeholder="Email"><br>
+  <input id="password" type="password" placeholder="Passwort"><br>
+  <button onclick="login()">Login</button>
+</div>
+
+<div id="map"></div>
+
+<script>
+const SUPABASE_URL = "DEINE_URL";
+const API_KEY = "DEIN_KEY";
+
+const supabaseClient = supabase.createClient(SUPABASE_URL, API_KEY);
+
+let map = L.map('map').setView([46.62, 14.31], 14);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19
+}).addTo(map);
+
+// 🔐 Login
+async function login() {
+  const email = document.getElementById("email").value;
+  const password = document.getElementById("password").value;
+
+  const { error } = await supabaseClient.auth.signInWithPassword({
+    email,
+    password
+  });
+
+  if (error) alert("Fehler");
+  else {
+    alert("OK");
+    loadData();
+  }
+}
+
+// 🎨 Farbe
+function getColor(status) {
+  if (status === "gespendet") return "green";
+  if (status === "nicht zuhause") return "red";
+  return "gray";
+}
+
+// 🏠 Daten laden
+async function loadData() {
+
+  // Häuser
+  const { data: houses } = await supabaseClient
+    .from("adress")
+    .select("*");
+
+  // Besuche
+  const { data: visits } = await supabaseClient
+    .from("visits")
+    .select("*");
+
+  houses.forEach(h => {
+    const visit = visits.find(v => v.osm_id === h.osm_id);
+
+    const status = visit?.status;
+    const color = getColor(status);
+
+    const marker = L.circleMarker([h.latitude, h.longitude], {
+      radius: 6,
+      color: color,
+      fillColor: color,
+      fillOpacity: 0.8
+    }).addTo(map);
+
+    marker.on("click", async () => {
+      const name = prompt("Name:");
+      const newStatus = prompt("Status (gespendet / nicht zuhause)");
+
+      await supabaseClient.from("visits").upsert({
+        osm_id: h.osm_id,
+        name: name,
+        status: newStatus
+      });
+
+      location.reload();
+    });
+  });
+}
+</script>
+
+</body>
+</html>
