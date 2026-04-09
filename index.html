@@ -1,104 +1,205 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Feuerwehr</title>
+  <title>Feuerwehr Sammel-App</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script src="https://unpkg.com/@supabase/supabase-js"></script>
-
   <style>
     #map { height: 100vh; }
-    #login { position:absolute; top:10px; left:10px; background:white; padding:10px; z-index:1000; }
+    #login, #admin-ui { position:absolute; top:10px; left:10px; background:white; padding:10px; z-index:1000; }
+    #admin-ui { display:none; margin-top:10px; }
+    #collector-form, #district-form { margin-top:10px; }
+    select, input { margin:3px 0; width: 150px; }
   </style>
 </head>
-
 <body>
 
+<!-- Login -->
 <div id="login">
+  <h4>Login</h4>
   <input id="email" placeholder="Email"><br>
   <input id="password" type="password" placeholder="Passwort"><br>
   <button onclick="login()">Login</button>
 </div>
 
+<!-- Admin UI -->
+<div id="admin-ui">
+  <h4>Admin Menü</h4>
+
+  <!-- Sammler anlegen -->
+  <div id="collector-form">
+    <h5>Neuen Sammler anlegen</h5>
+    <input id="new_email" placeholder="Email"><br>
+    <input id="new_name" placeholder="Name"><br>
+    <input id="new_password" placeholder="Passwort"><br>
+    <select id="new_district"></select><br>
+    <button onclick="createCollector()">Erstellen</button>
+  </div>
+
+  <!-- Bezirke verwalten -->
+  <div id="district-form">
+    <h5>Bezirke</h5>
+    <input id="new_district_name" placeholder="Straßenname"><br>
+    <button onclick="createDistrict()">Bezirk erstellen</button>
+  </div>
+</div>
+
+<!-- Karte -->
 <div id="map"></div>
 
 <script>
+// ---------------- Supabase Setup ----------------
 const SUPABASE_URL = "https://orarhdbyavikmmxflesi.supabase.co";
 const API_KEY = "sb_publishable_Zq3rXnzygrFM17VW3qF_Cg_uX6cTm-0";
 
 const supabaseClient = supabase.createClient(SUPABASE_URL, API_KEY);
 
+let currentUser = null;
+let isAdmin = false;
 let map = L.map('map').setView([46.62, 14.31], 14);
 
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 19
-}).addTo(map);
+// OpenStreetMap Layer
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 
-// 🔐 Login
+// ---------------- Login ----------------
 async function login() {
   const email = document.getElementById("email").value;
   const password = document.getElementById("password").value;
 
-  const { error } = await supabaseClient.auth.signInWithPassword({
-    email,
-    password
-  });
+  const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+  if (error) { alert("Login fehlgeschlagen"); return; }
 
-  if (error) alert("Fehler");
-  else {
-    alert("OK");
-    loadData();
-  }
+  currentUser = data.user;
+
+  // Prüfen ob Admin
+  const { data: roleData } = await supabaseClient
+    .from("users_roles")
+    .select("is_admin")
+    .eq("email", email)
+    .single();
+
+  isAdmin = roleData?.is_admin;
+  alert(isAdmin ? "Admin eingeloggt" : "Sammler eingeloggt");
+
+  document.getElementById("login").style.display = "none";
+  if(isAdmin) document.getElementById("admin-ui").style.display = "block";
+
+  loadMap();
+  if(isAdmin) loadDistricts();
 }
 
-// 🎨 Farbe
+// ---------------- Farben ----------------
 function getColor(status) {
-  if (status === "gespendet") return "green";
-  if (status === "nicht zuhause") return "red";
+  if(status==="gekauft/gespendet") return "green";
+  if(status==="nicht zuhause") return "red";
+  if(status==="kein interesse") return "blue";
   return "gray";
 }
 
-// 🏠 Daten laden
-async function loadData() {
-
-  // Häuser
-  const { data: houses } = await supabaseClient
-    .from("adress")
-    .select("*");
-
-  // Besuche
-  const { data: visits } = await supabaseClient
-    .from("visits")
-    .select("*");
+// ---------------- Load Marker ----------------
+async function loadMap() {
+  const { data: houses } = await supabaseClient.from("adress").select("*");
+  const { data: visits } = await supabaseClient.from("visits").select("*");
 
   houses.forEach(h => {
-    const visit = visits.find(v => v.osm_id === h.osm_id);
-
+    const visit = visits.find(v=>v.osm_id===h.osm_id);
     const status = visit?.status;
     const color = getColor(status);
 
-    const marker = L.circleMarker([h.latitude, h.longitude], {
-      radius: 6,
-      color: color,
-      fillColor: color,
-      fillOpacity: 0.8
-    }).addTo(map);
+    const marker = L.circleMarker([h.latitude,h.longitude], { radius:6, color, fillColor:color, fillOpacity:0.8 }).addTo(map);
 
-    marker.on("click", async () => {
-      const name = prompt("Name:");
-      const newStatus = prompt("Status (gespendet / nicht zuhause)");
-
-      await supabaseClient.from("visits").upsert({
-        osm_id: h.osm_id,
-        name: name,
-        status: newStatus
-      });
-
-      location.reload();
+    marker.on("click", ()=>{
+      showPopup(h, visit);
     });
   });
+}
+
+// ---------------- Popup ----------------
+function showPopup(house, visit) {
+  const popupContent = document.createElement("div");
+
+  const addr = document.createElement("div");
+  addr.innerText = house.addr_street + " " + house.addr_housenumber;
+  popupContent.appendChild(addr);
+
+  // Status Dropdown
+  const statusSelect = document.createElement("select");
+  ["nicht besucht","gekauft/gespendet","nicht zuhause","kein interesse"].forEach(s=>{
+    const opt = document.createElement("option");
+    opt.value=s; opt.text=s;
+    if(visit?.status===s) opt.selected=true;
+    statusSelect.appendChild(opt);
+  });
+  popupContent.appendChild(statusSelect);
+
+  // Verkauf €
+  const saleInput = document.createElement("input");
+  saleInput.type="number"; saleInput.placeholder="Verkauf €";
+  saleInput.value=visit?.sale_euro||"";
+  popupContent.appendChild(saleInput);
+
+  // Spende €
+  const donationInput = document.createElement("input");
+  donationInput.type="number"; donationInput.placeholder="Spende €";
+  donationInput.value=visit?.donation_euro||"";
+  popupContent.appendChild(donationInput);
+
+  // Button speichern
+  const btn = document.createElement("button");
+  btn.innerText="Speichern";
+  btn.onclick=async()=>{
+    await supabaseClient.from("visits").upsert({
+      osm_id: house.osm_id,
+      collector_id: currentUser.id,
+      status: statusSelect.value,
+      sale_euro: saleInput.value||0,
+      donation_euro: donationInput.value||0
+    });
+    alert("Gespeichert!");
+    location.reload();
+  };
+  popupContent.appendChild(btn);
+
+  L.popup().setLatLng([house.latitude, house.longitude]).setContent(popupContent).openOn(map);
+}
+
+// ---------------- Admin: Sammler erstellen ----------------
+async function loadDistricts() {
+  const { data: districts } = await supabaseClient.from("districts").select("*");
+  const select = document.getElementById("new_district");
+  select.innerHTML="";
+  districts.forEach(d=>{
+    const opt = document.createElement("option");
+    opt.value=d.id; opt.text=d.street_name;
+    select.appendChild(opt);
+  });
+}
+
+async function createCollector() {
+  const email = document.getElementById("new_email").value;
+  const name = document.getElementById("new_name").value;
+  const password = document.getElementById("new_password").value;
+  const district_id = document.getElementById("new_district").value;
+
+  // Auth User
+  await supabaseClient.auth.admin.createUser({ email, password });
+
+  // Collector Tabelle
+  await supabaseClient.from("collectors").insert({
+    email, display_name: name, created_by: currentUser.email, district_id
+  });
+
+  alert("Sammler erstellt!");
+}
+
+// ---------------- Admin: Bezirk erstellen ----------------
+async function createDistrict() {
+  const name = document.getElementById("new_district_name").value;
+  await supabaseClient.from("districts").insert({ street_name: name });
+  alert("Bezirk erstellt!");
+  loadDistricts();
 }
 </script>
 
